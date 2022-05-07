@@ -1,0 +1,248 @@
+2. Să se scrie comenzile SQL pentru tabelele proiectate la punctul anterior.
+
+SET AUTOCOMMIT ON;
+SET SERVEROUTPUT ON;
+
+CREATE TABLE curs(
+data DATE,
+rata NUMBER(3,2) CHECK (rata BETWEEN 1.00 AND 4.00)); 
+
+CREATE TABLE parteneri(
+CUI VARCHAR(6) PRIMARY KEY, 
+nume VARCHAR(10) NOT NULL ,
+adresa VARCHAR(25));
+
+CREATE TABLE tranzactii(
+data_efectuarii DATE, 
+CUI VARCHAR(6) NOT NULL REFERENCES parteneri(CUI),
+suma_valuta NUMBER(10,2) NOT NULL,
+suma_lei NUMBER(10,2));
+
+CREATE TABLE bilant_zilnic(
+data DATE PRIMARY KEY,
+sold_initial INTEGER DEFAULT 0,
+total_intrari INTEGER,
+total_iesiri INTEGER,
+sold_final INTEGER);
+
+
+--------------------------
+
+
+3. Să se scrie comenzile SQL pentru popularea bazei de date cu 5 tranzacții efectuate
+considerând 3 parteneri, in 2 zile consecutive.
+
+INSERT INTO curs VALUES('26.10.2011',2.92);
+INSERT INTO curs VALUES('27.10.2011',3);
+INSERT INTO curs VALUES('28.10.2011',3.5);
+INSERT INTO curs VALUES('29.10.2011',3);
+
+INSERT INTO parteneri VALUES('012345','Ana','Zalau');
+INSERT INTO parteneri VALUES('112345','Bianca','Vulcan');
+INSERT INTO parteneri VALUES('212345','Costel','Ulmi');
+
+INSERT INTO tranzactii VALUES('27.10.2011','012345',10,20);
+INSERT INTO tranzactii VALUES('27.10.2011','112345',30,40);
+INSERT INTO tranzactii VALUES('27.10.2011','112345',-50,-60);
+INSERT INTO tranzactii VALUES('28.10.2011','212345',-5,-25);
+INSERT INTO tranzactii VALUES('28.10.2011','012345',99,100);
+
+SELECT * FROM curs;
+SELECT * FROM parteneri;
+SELECT * FROM tranzactii;
+
+
+------------------------------------------------
+
+
+4. Să se implementeze un mecanism care să nu permită modificarea cursului valutar
+pentru zilele când sunt efectuate tranzacții, să se argumenteze alegerea făcută.
+
+Pentru rezolvarea cerinței am decis să creez un trigger. Am ales această metodă de rezolvare deoarece mi s-a părut cea mai eficientă pentru rezolvarea cerinței și totodată este ușor de implementat. Trigger-ul are următorul algoritm: înainte de orice modificare asupra tabelei curs (acest fapt aplicându-se numai asupra modificărilor ce doresc a fi efectuate după crearea trigger-ului) se alocă variabilei noi declarate nrdata de cate ori data asupra căreia se dorește modificarea există în tabela tranzacții; daca nrdata este diferit de zero, și deci există tranzacții efectuate în data respectivă, triggerul semnalează eroare și modificarea nu se efectuează.
+
+CREATE OR REPLACE TRIGGER modif_curs4
+BEFORE UPDATE ON curs
+FOR EACH ROW
+DECLARE
+nrdata INTEGER;
+BEGIN
+SELECT COUNT(data_efectuarii) INTO nrdata FROM tranzactii WHERE data_efectuarii=:new.data;
+IF nrdata<>0 THEN 
+RAISE_APPLICATION_ERROR(-20000, 'Nu se poate modifica rata! S-au efectuat tranzactii in data introdusa!');
+END IF;
+END;
+/
+
+UPDATE curs SET rata=4 WHERE data='28.10.2011';
+
+Pentru dovedirea funcționării am încercat modificarea asupra ratei de schimb pentru o dată în care s-au efectuat tranzacții(aceasta nu s-a efectuat, s-a afișat mesajul de eroare).
+
+
+--------------------------------------------------------
+
+5. Să se scrie o procedura care să genereze un raport care să cuprindă numele, CUI,
+intrări, ieșiri pentru partenerul specificat ca și argument prin CUI.
+
+Procedura are următorii pași: selecteaza numele clientului ce are CUI-ul dat ca parametru și îl inserează în variabila nume1 declarată în cadrul său, în variabila intrari/iesiri este inserată suma intrărilor/ieșirilor efectuate de client ce se gasesc în tabela tranzacții; Se verifică pe rând dacă variabilele intrari, iesiri sunt nule, iar în caz afirmativ li se atribuie valoarea 0 (am făcut asta pentru ca la afisare să nu rămană gol unde trebuia valorea variabilei); Se afișează informațiile cerute cu ajutorul funcției PUT_LINE a pachetului predefinit DBMS_OUTPUT. 
+
+CREATE OR REPLACE PROCEDURE raport1(cui1 varchar)
+AS
+nume1 VARCHAR(10);
+intrari INTEGER;
+iesiri INTEGER;
+BEGIN
+SELECT nume INTO nume1 FROM parteneri WHERE cui=cui1;
+SELECT SUM(suma_valuta) INTO intrari FROM tranzactii WHERE cui=cui1 AND suma_valuta>0;
+SELECT ABS(SUM(suma_valuta)) INTO iesiri FROM tranzactii WHERE cui=cui1 AND suma_valuta<0;
+IF intrari IS NULL THEN
+intrari:=0;
+END IF;
+IF iesiri IS NULL THEN
+iesiri:=0;
+END IF;
+DBMS_OUTPUT.PUT_LINE('Clientul cu numele '||nume1||' si CUI-ul '||cui1||' a avut '||intrari||' intrari si '||iesiri||' iesiri.');
+END;
+/
+
+EXEC raport1('012345');
+
+------------------------------------
+
+
+6. Să se genereze un raport detaliat care să cuprindă pentru fiecare partener: numele,
+CUI-ul, și toate tranzacțiile efectuate (data tranzacție, tip tranzacție (intrare sau ieșire),
+suma în valuta, suma în lei), ordonat după nume și data efectuării tranzacțiilor.
+
+Pentru a simplifica metoda de identificare a tipului de tranzacție am folosit operatiția UNION între doua SELECT-uri, unul fiind pentru selectarea intrărilor, iar celălalt pentru ieșiri. 
+
+SELECT nume, A.CUI, data_efectuarii, suma_valuta, suma_lei, 'intrare' AS tip_tranzactie 
+FROM tranzactii A, parteneri B 
+WHERE suma_valuta>0 AND A.CUI=B.CUI
+GROUP BY nume, A.CUI, data_efectuarii, suma_valuta, suma_lei
+UNION
+SELECT nume, A.CUI, data_efectuarii, suma_valuta, suma_lei, 'iesire' AS tip_tranzactie 
+FROM tranzactii A, parteneri B
+WHERE suma_valuta<=0 AND A.CUI=B.CUI 
+GROUP BY nume, A.CUI, data_efectuarii, suma_valuta, suma_lei
+ORDER BY nume, data_efectuarii;
+
+
+-----------------------------------
+
+7. Să se scrie un trigger care la adăugarea unei tranzacții să calculeze automat suma în
+lei, iar daca cursul nu este specificat, să semnaleze eroare și să nu permită adăugarea
+tranzacției.
+Algoritmul trigger-ului este: inserează în variabila nrdata de câte ori data respectivă se regăsește în tablela curs (maxim 1); dacă nrdata este diferită de 0, înseamnă că este specificată rata de schimb pentru data respectivă și i se atribuie variabilei suma_lei valorea ratei de schimb înmulțită cu suma in valută; în cazul în care nrdata este 0 (deci nu este specificat cursul în ziua respectivă) se semnalează eroare și adaugarea nu are loc.
+
+CREATE OR REPLACE TRIGGER suma
+BEFORE INSERT ON tranzactii
+FOR EACH ROW
+DECLARE
+nrdata INTEGER;
+r_curs NUMBER(3,2);
+BEGIN
+SELECT COUNT(data) INTO nrdata FROM curs WHERE data=:NEW.data_efectuarii;
+IF nrdata<>0 THEN
+SELECT rata INTO r_curs FROM curs WHERE  data=:NEW.data_efectuarii;
+:NEW.suma_lei:=:NEW.suma_valuta*r_curs;
+ELSE
+RAISE_APPLICATION_ERROR(-20000, 'Rata de schimb inexistenta pentru ziua specificata!');
+END IF;
+END;
+/
+INSERT INTO tranzactii VALUES( '01.01.2020','212345',15,NULL);
+INSERT INTO tranzactii VALUES('29.10.2011','112345',10,NULL);
+SELECT * FROM tranzactii;
+
+-------------------------------------------------
+
+
+8. Să se scrie o funcție care să primească ca și parametru CUI și să returneze rulajul
+efectuat de acel partener (suma dintre intrări și ieșiri luate fără semn).
+
+Cu ajutorul funcțiilor SUM(pentru calcularea sumei intrărilor/ieșirilor) și ABS(pentru modului ieșirilor) funcția salvează în variabilele intrări și ieșiri cele doua elemente care însumate reprezintă rulajul efectuat de partenerul specificat prin CUI (ce este dat ca și parametru). În cazul în care partenerul nu a avut intrări/ieșiri, variabilei corespunzătoare i se atribuie valoarea 0 pentru a elimina eventualele erori ale rezultatului (de exemplu dacă cel puțin una dintre valorile adunate este egală cu null, rezultatul este de asemenea null).
+
+CREATE OR REPLACE FUNCTION rulaj(cui1 varchar)
+RETURN INTEGER AS
+intrari INTEGER;
+iesiri INTEGER;
+BEGIN
+SELECT SUM(suma_valuta) INTO intrari FROM tranzactii WHERE cui=cui1 AND suma_valuta>0;
+SELECT ABS(SUM(suma_valuta)) INTO iesiri FROM tranzactii WHERE cui=cui1 AND suma_valuta<0;
+IF intrari IS NULL THEN
+intrari:=0;
+END IF;
+IF iesiri IS NULL THEN
+iesiri:=0;
+END IF;
+RETURN intrari+iesiri;
+END;
+/
+
+SELECT rulaj('012345') FROM DUAL;
+
+---------------------------------------
+
+9. Să se afișeze partenerii care doar au încasat și care nu au făcut plăți într-un an întreg,
+precizând: nume, CUI, suma totala încasată.
+
+Pentru o mai bună exemplificare a rezultatului comenzii SELECT am introdus câte o valore în tabela curs, respectiv tranzactii. Această interogare pe două tabele folosește funcția de la punctul 8 ( funcția rulaj ) pentru a verifica dacă rulajul efectuat de un respectiv partener este egal cu suma încasărilor, deci prin urmare acesta doar a încasat și nu a făcut nici o plata. De asemenea, se utilizează funcția MONTHS_BETWEEN cu ajutorul căreia se calculează lunile dintre data actuală și data ultimei tranzacții efectuate de un anume partener, astfel valorificându-se cerința ca să nu se fi făcut plăți într-un an întreg. 
+
+INSERT INTO curs VALUES('29.03.2020',3);
+INSERT INTO tranzactii VALUES('29.03.2020','012345',10,NULL);
+
+SELECT nume, A.CUI, SUM(suma_valuta) AS suma_totala
+FROM parteneri A, tranzactii B
+WHERE  A.CUI=B.CUI AND MONTHS_BETWEEN(data_efectuarii,sysdate)<=12
+GROUP BY nume, A.CUI
+HAVING rulaj(A.CUI)=SUM(suma_valuta);
+
+------------------------------------------------------
+
+10. Să se afișeze partenerul care are cele mai multe tranzacții, precizând numele, CUI-ul,
+număr de tranzacții, rata lui de rentabilitate (cât la sută este profit din suma totală a
+tranzacțiilor).
+
+Interogarea folosește funcția COUNT pentru calcula numărul de tranzacții, folosind un alias pentru acesta (nr_tranzactii). Se utlizează și funcția NVL care returnează suma intrărilor dacă acestea există, respectiv 0 în caz contrar. De asmenea, pentru a ușura calculul ratei de rentabilitate se utlizează funcția rulaj de la punctul 8. În clauza HAVING este verificată condiția ca partenerul cu CUI-ul respectiv să fie cel cu cele mai multe tranzacții (utilizându-se selecarea nr-ului maxim de tranzacții efectuate de un partener cu ajutorului funcției MAX). 
+ 
+SELECT nume, A.CUI, COUNT(B.CUI) AS nr_tranzactii, NVL((SELECT SUM(suma_valuta) FROM tranzactii WHERE suma_valuta>=0),0)*(100/rulaj(A.CUI)) AS rata_de_rentabilitate
+FROM parteneri A, tranzactii B
+WHERE A.CUI=B.CUI
+GROUP BY nume, A.CUI
+HAVING COUNT(B.CUI)=(SELECT MAX(COUNT(B.CUI)) FROM tranzactii GROUP BY data_efectuarii);
+
+
+-----------------------
+-------------
+
+PS.
+După ce am terminat rezolvarea problemei, am realizat că am ”ignorat” tabela bilant_zilnic. Prin urmare, am făcut un trigger care face ca atunci când se înserează sau se modifică tabela tranzactii,să se facă de asemenea inserări sau modificări asupra tabelei bilant_zilnic. Pentru exemplificare, am făcut 3 inserări în tabela tranzacții.
+
+CREATE OR REPLACE TRIGGER bilant
+AFTER INSERT OR UPDATE ON tranzactii
+FOR EACH ROW
+DECLARE 
+data1 INTEGER;
+BEGIN
+SELECT COUNT(data) INTO data1 FROM bilant_zilnic WHERE data=:NEW.data_efectuarii;
+IF data1<>0  THEN
+IF :NEW.suma_valuta<0 THEN
+UPDATE bilant_zilnic SET total_iesiri=total_iesiri+:NEW.suma_valuta WHERE data=:NEW.data_efectuarii;
+ELSE
+UPDATE bilant_zilnic SET total_intrari=total_intrari+:NEW.suma_valuta WHERE data=:NEW.data_efectuarii;
+END IF;
+UPDATE bilant_zilnic SET sold_final=sold_final+:NEW.suma_valuta WHERE data=:NEW.data_efectuarii;
+ELSE
+IF :NEW.suma_valuta<0 THEN 
+INSERT INTO bilant_zilnic(data,sold_initial,total_intrari,total_iesiri,sold_final) VALUES(:NEW.data_efectuarii, 0, 0, :NEW.suma_valuta, :NEW.suma_valuta);
+ELSE
+INSERT INTO bilant_zilnic(data,sold_initial,total_intrari,total_iesiri,sold_final) VALUES(:NEW.data_efectuarii,0 , :NEW.suma_valuta,0,:NEW.suma_valuta);
+END IF;
+END IF;
+END;
+/
+
+INSERT INTO tranzactii VALUES('29.10.2011','212345',10,30);
+INSERT INTO tranzactii VALUES('29.10.2011','112345',-5,-15);
+INSERT INTO tranzactii VALUES('28.10.2011','012345',6,21); 
+
